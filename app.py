@@ -5,191 +5,355 @@ import time
 import threading
 import urllib.request
 import urllib.error
+import gc
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Configuration
 PROXY_URL = os.environ.get("PROXY_URL", "http://14a93721ee7fb:8c22cf1655@154.6.39.142:12323")
 SYNC_URL = os.environ.get("SYNC_URL", "https://all-creator.bio.co.ua/flow/sync_cookies.php")
 SECRET_KEY = os.environ.get("SYNC_SECRET", "FLOW_ULTRA_AUTO_SYNC_2026_SECRET_KEY")
+FLOW_URL = os.environ.get("FLOW_URL", "https://flow.google.com/")
+PORT = int(os.environ.get("PORT", 8080))
 CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL", 600))  # 10 minutes
 
-last_status = {
-    "status": "initializing",
+# Parse proxy components for Playwright
+proxy_parts = PROXY_URL.replace("http://", "").replace("https://", "").split("@")
+if len(proxy_parts) == 2:
+    creds, host_port = proxy_parts
+    p_user, p_pass = creds.split(":")
+    p_server = f"http://{host_port}"
+else:
+    p_server = PROXY_URL
+    p_user, p_pass = None, None
+
+service_state = {
+    "service": "Flow Ultra Render CloudKeeper (Playwright Autonomous)",
+    "mode": "initializing",
+    "uptime_start": time.strftime("%Y-%m-%d %H:%M:%S"),
     "last_check_time": None,
-    "last_http_code": None,
+    "last_page_url": None,
+    "page_title": None,
+    "session_valid": False,
     "rotated_count": 0,
-    "version": 0
+    "last_rotated_tokens": [],
+    "last_sync_version": None,
+    "error": None
 }
 
-def perform_keepalive():
-    global last_status
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Starting keepalive check via proxy {PROXY_URL.split('@')[-1]}...")
-    
-    # 1. Fetch current cookies from hosting
+def log(msg):
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
+
+def fetch_cookies_from_server():
     try:
-        req_fetch = urllib.request.Request(
+        req = urllib.request.Request(
             SYNC_URL,
             data=json.dumps({"secret": SECRET_KEY, "action": "get_cookies"}).encode(),
             headers={"Content-Type": "application/json"}
         )
-        with urllib.request.urlopen(req_fetch, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode())
-            cookies = data.get("cookies", [])
-            print(f"Loaded {len(cookies)} cookies from server.")
+            return data.get("cookies", []), data.get("version", 0)
     except Exception as e:
-        print(f"Error fetching cookies from server: {e}")
-        last_status["status"] = "error_fetching_cookies"
-        last_status["error"] = str(e)
-        return last_status
+        log(f"Error fetching cookies from server: {e}")
+        return [], 0
 
-    if not cookies:
-        print("No cookies found on server!")
-        last_status["status"] = "no_cookies"
-        return last_status
-
-    # Build cookie map and header
-    cookies_map = {c["name"]: c for c in cookies if "name" in c and "value" in c}
-    cookie_hdr = "; ".join([f"{c['name']}={c['value']}" for c in cookies if "name" in c and "value" in c])
-
-    # 2. Ping Google Flow via residential proxy
-    proxy_handler = urllib.request.ProxyHandler({"http": PROXY_URL, "https": PROXY_URL})
-    opener = urllib.request.build_opener(proxy_handler)
-
-    req_google = urllib.request.Request(
-        "https://flow.google.com/",
-        headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            "Cookie": cookie_hdr,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
-        }
-    )
-
+def push_cookies_to_server(cookies_list):
     try:
-        with opener.open(req_google, timeout=20) as r:
-            http_code = r.status
-            final_url = r.geturl()
-            set_cookies = r.headers.get_all("Set-Cookie", [])
-            print(f"Google response: HTTP {http_code}, Set-Cookie headers: {len(set_cookies)}")
-    except urllib.error.HTTPError as he:
-        http_code = he.code
-        final_url = he.url
-        set_cookies = he.headers.get_all("Set-Cookie", [])
-        print(f"Google HTTPError: {he.code}")
+        req = urllib.request.Request(
+            SYNC_URL,
+            data=json.dumps({
+                "secret": SECRET_KEY,
+                "action": "sync",
+                "email": "vps_autokeeper@all-creator.bio.co.ua",
+                "device_name": "Render-Playwright-24-7",
+                "cookies": cookies_list
+            }).encode(),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            res = json.loads(resp.read().decode())
+            log(f"Push to server response: {res.get('status')} - v{res.get('version')}")
+            return res.get("version")
     except Exception as e:
-        print(f"Error connecting to Google via proxy: {e}")
-        last_status["status"] = "proxy_connect_error"
-        last_status["error"] = str(e)
-        return last_status
+        log(f"Error pushing updated cookies to server: {e}")
+        return None
 
-    # 3. Parse rotated Set-Cookie
-    rotated_names = []
-    for sc in set_cookies:
-        pair = sc.split(";")[0].strip()
-        if "=" in pair:
-            cname, cval = pair.split("=", 1)
-            cname = cname.strip()
-            cval = cval.strip()
-            if cname in cookies_map:
-                if cookies_map[cname]["value"] != cval:
-                    cookies_map[cname]["value"] = cval
-                    rotated_names.append(cname)
-            else:
-                cookies_map[cname] = {
-                    "domain": ".google.com",
-                    "expirationDate": time.time() + 31536000,
-                    "hostOnly": False,
-                    "httpOnly": True,
-                    "name": cname,
-                    "path": "/",
-                    "sameSite": "no_restriction",
-                    "secure": True,
-                    "session": False,
-                    "storeId": None,
-                    "value": cval
-                }
-                rotated_names.append(cname)
-
-    # 4. If cookies were rotated, push back to server
-    if rotated_names:
-        print(f"Tokens rotated ({len(rotated_names)}: {', '.join(rotated_names)}). Pushing to server...")
-        try:
-            req_push = urllib.request.Request(
-                SYNC_URL,
-                data=json.dumps({
-                    "secret": SECRET_KEY,
-                    "action": "sync",
-                    "email": "vps_autokeeper@all-creator.bio.co.ua",
-                    "device_name": "Render-CloudKeeper",
-                    "cookies": list(cookies_map.values())
-                }).encode(),
-                headers={"Content-Type": "application/json"}
-            )
-            with urllib.request.urlopen(req_push, timeout=15) as push_resp:
-                push_res = json.loads(push_resp.read().decode())
-                print(f"Push response: {push_res}")
-        except Exception as e:
-            print(f"Error pushing updated cookies to server: {e}")
-    else:
-        print("No tokens rotated in this cycle. Session remains active.")
-
-    last_status = {
-        "status": "success",
-        "last_check_time": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "last_http_code": http_code,
-        "final_url": final_url,
-        "rotated_count": len(rotated_names),
-        "rotated_tokens": rotated_names
-    }
-    return last_status
-
-def background_loop():
-    time.sleep(5)  # initial delay
-    while True:
-        try:
-            perform_keepalive()
-        except Exception as e:
-            print(f"Unhandled loop error: {e}")
-        time.sleep(CHECK_INTERVAL_SECONDS)
-
-class RequestHandler(BaseHTTPRequestHandler):
+# ============================================================
+# HTTP STATUS / HEALTHCHECK SERVER (Required by Render)
+# ============================================================
+class HealthRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path in ["/", "/health"]:
+        if self.path in ["/", "/health", "/status"]:
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()
             resp = {
-                "service": "Flow Ultra Render CloudKeeper",
-                "uptime": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "status": last_status
+                "status": "online",
+                "current_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "details": service_state
             }
             self.wfile.write(json.dumps(resp, indent=2, ensure_ascii=False).encode())
         elif self.path == "/keepalive":
-            result = perform_keepalive()
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()
-            self.wfile.write(json.dumps(result, indent=2, ensure_ascii=False).encode())
+            self.wfile.write(json.dumps({
+                "status": "acknowledged",
+                "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "session_valid": service_state.get("session_valid", False),
+                "last_url": service_state.get("last_page_url")
+            }).encode())
         else:
             self.send_response(404)
             self.end_headers()
             self.wfile.write(b"Not Found")
 
     def log_message(self, format, *args):
-        # Silence default request logs
+        # Silence default request access logs
         return
 
+# ============================================================
+# PLAYWRIGHT AUTONOMOUS BROWSER ENGINE (Zomro VPS Replacement)
+# ============================================================
+def run_playwright_autonomous():
+    global service_state
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        log("Playwright not installed in this environment. Falling back to HTTP Keepalive mode...")
+        run_http_fallback()
+        return
+
+    log("Starting Playwright 24/7 Autonomous Browser Engine...")
+    service_state["mode"] = "playwright_autonomous"
+
+    while True:
+        try:
+            # 1. Fetch current authoritative cookies from hosting
+            raw_cookies, server_version = fetch_cookies_from_server()
+            if not raw_cookies:
+                log("No cookies received from hosting. Retrying in 60s...")
+                time.sleep(60)
+                continue
+
+            service_state["last_sync_version"] = server_version
+            current_sidts = next((c["value"] for c in raw_cookies if c.get("name") == "__Secure-1PSIDTS"), None)
+
+            # Convert to Playwright format
+            pw_cookies = []
+            for c in raw_cookies:
+                cname = c.get("name")
+                cval = c.get("value")
+                if not cname or not cval:
+                    continue
+                same_site = c.get("sameSite", "Lax")
+                if same_site == "no_restriction":
+                    same_site = "None"
+                elif same_site not in ["Strict", "Lax", "None"]:
+                    same_site = "Lax"
+
+                pw_cookies.append({
+                    "name": cname,
+                    "value": cval,
+                    "domain": c.get("domain", ".google.com"),
+                    "path": c.get("path", "/"),
+                    "secure": c.get("secure", True),
+                    "httpOnly": c.get("httpOnly", False),
+                    "sameSite": same_site
+                })
+
+            log(f"Launching headless Chromium via US proxy ({p_server})...")
+
+            with sync_playwright() as p:
+                proxy_config = {"server": p_server}
+                if p_user and p_pass:
+                    proxy_config["username"] = p_user
+                    proxy_config["password"] = p_pass
+
+                # Ultra-lightweight Chromium args to stay well within Render 512MB RAM
+                browser = p.chromium.launch(
+                    headless=True,
+                    proxy=proxy_config,
+                    args=[
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-gpu",
+                        "--disable-software-rasterizer",
+                        "--blink-settings=imagesEnabled=false",
+                        "--disable-background-networking",
+                        "--disable-default-apps",
+                        "--disable-extensions",
+                        "--disable-sync",
+                        "--disable-translate",
+                        "--mute-audio",
+                        "--no-first-run",
+                        "--safebrowsing-disable-auto-update"
+                    ]
+                )
+
+                context = browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                    viewport={"width": 1280, "height": 800}
+                )
+
+                # Route abort heavy static media to save memory & proxy data
+                def block_media(route):
+                    if route.request.resource_type in ["image", "media", "font"]:
+                        route.abort()
+                    else:
+                        route.continue_()
+
+                page = context.new_page()
+                page.route("**/*", block_media)
+
+                # Inject cookies
+                context.add_cookies(pw_cookies)
+
+                log(f"Navigating to {FLOW_URL}...")
+                try:
+                    page.goto(FLOW_URL, wait_until="domcontentloaded", timeout=45000)
+                except Exception as e:
+                    log(f"Initial navigation load warning: {e}")
+
+                time.sleep(8)
+
+                current_url = page.url
+                page_title = page.title()
+                is_valid = "about" not in current_url and "accounts.google" not in current_url
+
+                service_state["last_check_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                service_state["last_page_url"] = current_url
+                service_state["page_title"] = page_title
+                service_state["session_valid"] = is_valid
+
+                log(f"Browser loaded. URL: {current_url} | Title: {page_title} | Valid: {is_valid}")
+
+                # Active maintenance loop (keeps project tab running & monitors token rotation)
+                cycle_count = 0
+                while True:
+                    time.sleep(CHECK_INTERVAL_SECONDS)
+                    cycle_count += 1
+
+                    try:
+                        # 1. Gentle JavaScript pulse to trigger Angular background worker
+                        page.evaluate("() => document.title")
+                    except Exception as e:
+                        log(f"Pulse error: {e}")
+
+                    # 2. Check cookies in active browser context
+                    live_cookies = context.cookies()
+                    live_sidts = next((c["value"] for c in live_cookies if c.get("name") == "__Secure-1PSIDTS"), None)
+                    current_url = page.url
+                    page_title = page.title()
+                    is_valid = "about" not in current_url and "accounts.google" not in current_url
+
+                    service_state["last_check_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                    service_state["last_page_url"] = current_url
+                    service_state["page_title"] = page_title
+                    service_state["session_valid"] = is_valid
+
+                    # 3. Detect if Google rotated __Secure-1PSIDTS or __Secure-3PSIDTS
+                    if live_sidts and live_sidts != current_sidts and is_valid:
+                        log(f"CRITICAL TOKEN ROTATED BY GOOGLE! New 1PSIDTS: {live_sidts[:30]}...")
+                        
+                        # Format for hosting
+                        updated_list = []
+                        for lc in live_cookies:
+                            updated_list.append({
+                                "domain": lc.get("domain", ".google.com"),
+                                "expirationDate": lc.get("expires", time.time() + 31536000),
+                                "hostOnly": False,
+                                "httpOnly": lc.get("httpOnly", True),
+                                "name": lc.get("name"),
+                                "path": lc.get("path", "/"),
+                                "sameSite": "no_restriction" if lc.get("sameSite") == "None" else "lax",
+                                "secure": lc.get("secure", True),
+                                "session": False,
+                                "storeId": None,
+                                "value": lc.get("value")
+                            })
+
+                        new_ver = push_cookies_to_server(updated_list)
+                        if new_ver:
+                            current_sidts = live_sidts
+                            service_state["rotated_count"] += 1
+                            service_state["last_rotated_tokens"] = ["__Secure-1PSIDTS"]
+                            service_state["last_sync_version"] = new_ver
+                            log(f"Server updated to v{new_ver} successfully.")
+                    else:
+                        log(f"Keepalive check OK (Cycle #{cycle_count}) - Session active on {current_url}")
+
+                    # 4. Hourly gentle reload to refresh client state and free memory
+                    if cycle_count % 6 == 0:
+                        log("Hourly scheduled refresh of Flow tab...")
+                        try:
+                            page.reload(wait_until="domcontentloaded", timeout=30000)
+                            time.sleep(5)
+                        except Exception as re_err:
+                            log(f"Reload warning: {re_err}")
+                        gc.collect()
+
+                    # 5. Prevent memory buildup: restart browser every 12 hours
+                    if cycle_count >= 72:
+                        log("12-hour memory recycling cycle reached. Restarting browser cleanly...")
+                        break
+
+                browser.close()
+                log("Browser closed cleanly. Starting fresh cycle...")
+
+        except Exception as loop_err:
+            log(f"Playwright cycle encountered error: {loop_err}")
+            service_state["error"] = str(loop_err)
+            time.sleep(30)
+
+# ============================================================
+# HTTP FALLBACK ENGINE (Used if Playwright is unavailable)
+# ============================================================
+def run_http_fallback():
+    global service_state
+    log("Running in HTTP Keepalive Fallback Mode...")
+    service_state["mode"] = "http_fallback"
+
+    proxy_handler = urllib.request.ProxyHandler({"http": PROXY_URL, "https": PROXY_URL})
+    opener = urllib.request.build_opener(proxy_handler)
+
+    while True:
+        try:
+            cookies, ver = fetch_cookies_from_server()
+            if cookies:
+                cookie_hdr = "; ".join([f"{c['name']}={c['value']}" for c in cookies if "name" in c and "value" in c])
+                req = urllib.request.Request(
+                    FLOW_URL,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                        "Cookie": cookie_hdr
+                    }
+                )
+                with opener.open(req, timeout=20) as r:
+                    service_state["last_check_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                    service_state["last_page_url"] = r.geturl()
+                    service_state["session_valid"] = "about" not in r.geturl() and "accounts" not in r.geturl()
+                    log(f"HTTP Keepalive Ping: {r.status} -> {r.geturl()}")
+        except Exception as e:
+            log(f"HTTP Fallback error: {e}")
+            service_state["error"] = str(e)
+
+        time.sleep(CHECK_INTERVAL_SECONDS)
+
+# ============================================================
+# MAIN ENTRYPOINT
+# ============================================================
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    print(f"Starting Flow CloudKeeper Web Server on port {port}...")
-    
-    # Start background worker thread
-    t = threading.Thread(target=background_loop, daemon=True)
+    log(f"Starting Flow Ultra CloudKeeper Web Server on port {PORT}...")
+
+    # Start autonomous worker thread
+    t = threading.Thread(target=run_playwright_autonomous, daemon=True)
     t.start()
 
-    server = HTTPServer(("0.0.0.0", port), RequestHandler)
+    server = HTTPServer(("0.0.0.0", PORT), HealthRequestHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("Stopping server...")
+        log("Stopping server...")
         server.server_close()
