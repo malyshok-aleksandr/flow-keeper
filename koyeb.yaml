@@ -1,0 +1,26 @@
+name: flow-ultra-keeper
+services:
+  - name: flow-ultra-keeper
+    type: web
+    docker:
+      image: ""
+    instance_types:
+      - type: nano
+    ports:
+      - port: 8080
+        path: /
+    env:
+      - key: PORT
+        value: "8080"
+      - key: WORKER_ID
+        value: "Koyeb-CloudKeeper-2"
+      - key: PLATFORM_NAME
+        value: "Koyeb Serverless"
+      - key: PROXY_HOST
+        value: "154.6.39.142"
+      - key: PROXY_PORT
+        value: "12323"
+      - key: PROXY_USER
+        value: "14a93721ee7fb"
+      - key: PROXY_PASS
+        value: "8c22cf1655"
