@@ -16,6 +16,8 @@ FLOW_URL = os.environ.get("FLOW_URL", "https://flow.google.com/")
 PROFILE_DIR = os.environ.get("PROFILE_DIR", "/app/chrome_profile")
 PORT = int(os.environ.get("PORT", 8080))
 CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL", 900))  # 15 minutes (Zomro pattern)
+WORKER_ID = os.environ.get("WORKER_ID", "Render-ZomroEngine-24-7")
+PLATFORM_NAME = os.environ.get("PLATFORM_NAME", "Render.com")
 
 PROXY_HOST = os.environ.get("PROXY_HOST", "154.6.39.142")
 PROXY_PORT = int(os.environ.get("PROXY_PORT", 12323))
@@ -97,7 +99,29 @@ def start_local_bridge(port=LOCAL_BRIDGE_PORT):
 threading.Thread(target=start_local_bridge, daemon=True).start()
 time.sleep(1)
 
-# ----------------- COOKIE SYNC -----------------
+# ----------------- COOKIE SYNC & COORDINATION -----------------
+def send_heartbeat(is_valid=True, current_url="https://flow.google.com/"):
+    try:
+        req = urllib.request.Request(
+            SYNC_URL,
+            data=json.dumps({
+                "secret": SECRET_KEY,
+                "action": "heartbeat",
+                "worker_id": WORKER_ID,
+                "platform": PLATFORM_NAME,
+                "session_valid": is_valid,
+                "page_url": current_url,
+                "version": service_state.get("last_sync_version", 0)
+            }).encode(),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+            return data.get("can_rotate", True), data.get("role", "master")
+    except Exception as e:
+        log(f"Heartbeat warning: {e}")
+        return True, "master"
+
 def fetch_cookies_from_server():
     try:
         req = urllib.request.Request(
@@ -270,6 +294,10 @@ def run_playwright_autonomous():
 
                 log(f"Flow loaded. URL: {current_url} | Title: {page_title} | Valid: {is_valid}")
 
+                can_rot, my_role = send_heartbeat(is_valid, current_url)
+                service_state["role"] = my_role
+                log(f"[CLUSTER] Registered with cluster orchestrator. Role: {my_role} (Can Rotate: {can_rot})")
+
                 # Initial sync (только если URL валиден и авторизован)
                 live_c = context.cookies()
                 if any(c.get("name") in ("SID", "SSID") for c in live_c) and is_valid:
@@ -322,6 +350,12 @@ def run_playwright_autonomous():
                             service_state["last_sync_version"] = new_ver
                         except Exception as ce:
                             log(f"Cookie re-injection warning: {ce}")
+
+                    can_rot, my_role = send_heartbeat(service_state.get("session_valid", True), service_state.get("last_page_url", FLOW_URL))
+                    service_state["role"] = my_role
+                    if not can_rot:
+                        log(f"[CLUSTER] Standby mode active. Master lease owned by another keeper. Standing by...")
+                        continue
 
                     try:
                         log("[KEEPALIVE] Periodic navigation to Flow to rotate tokens...")
