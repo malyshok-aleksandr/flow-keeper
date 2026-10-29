@@ -272,9 +272,12 @@ def run_playwright_autonomous():
                     log(f"Initial navigation load warning: {e}")
 
                 current_url = page.url
-                page_title = page.title()
+                try:
+                    page_title = page.title()
+                except Exception:
+                    page_title = "Google Flow"
 
-                if "about" in current_url:
+                if "flow.google.com/about" in current_url:
                     log("Landed on /about. Attempting auto-click into studio...")
                     try:
                         create_btn = page.locator("button:has-text('Создать'), a:has-text('Создать'), button:has-text('Create')").first
@@ -282,11 +285,14 @@ def run_playwright_autonomous():
                             create_btn.click()
                             page.wait_for_timeout(8000)
                             current_url = page.url
-                            page_title = page.title()
+                            try:
+                                page_title = page.title()
+                            except Exception:
+                                page_title = "Google Flow"
                     except Exception as ce:
                         log(f"Auto-click warning: {ce}")
 
-                is_valid = "about" not in current_url and "accounts.google" not in current_url
+                is_valid = "flow.google.com/about" not in current_url and "accounts.google" not in current_url and current_url.startswith("http")
                 service_state["last_check_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
                 service_state["last_page_url"] = current_url
                 service_state["page_title"] = page_title
@@ -376,8 +382,12 @@ def run_playwright_autonomous():
                         if c.get("name") in ["__Secure-1PSIDTS", "__Secure-1PSIDRTS", "__Secure-3PSIDTS", "__Secure-3PSIDRTS"]
                     }
                     current_url = page.url
-                    page_title = page.title()
-                    is_valid = "about" not in current_url and "accounts.google" not in current_url
+                    try:
+                        page_title = page.title()
+                    except Exception:
+                        page_title = "Google Flow"
+
+                    is_valid = "flow.google.com/about" not in current_url and "accounts.google" not in current_url and current_url.startswith("http")
 
                     service_state["last_check_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
                     service_state["last_page_url"] = current_url
