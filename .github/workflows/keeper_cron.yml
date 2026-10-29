@@ -1,0 +1,29 @@
+name: Flow Cloud Keeper (Autonomous 24-7 Cron)
+
+on:
+  schedule:
+    - cron: '*/20 * * * *'
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Playwright & Chromium
+        run: |
+          pip install playwright==1.49.0
+          playwright install --with-deps chromium
+
+      - name: Run Autonomous Flow Keeper
+        run: |
+          python github_keeper.py
