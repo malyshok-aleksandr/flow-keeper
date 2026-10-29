@@ -270,9 +270,9 @@ def run_playwright_autonomous():
 
                 log(f"Flow loaded. URL: {current_url} | Title: {page_title} | Valid: {is_valid}")
 
-                # Initial sync
+                # Initial sync (только если URL валиден и авторизован)
                 live_c = context.cookies()
-                if any(c.get("name") in ("SID", "SSID") for c in live_c):
+                if any(c.get("name") in ("SID", "SSID") for c in live_c) and is_valid:
                     formatted = []
                     for c in live_c:
                         is_host_only = c.get("name") in ("OSID", "__Secure-OSID")
