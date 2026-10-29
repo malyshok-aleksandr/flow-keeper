@@ -1,8 +1,6 @@
-name: Flow Cloud Keeper (Autonomous 24-7 Cron)
+name: Flow Cloud Keeper (Manual Dispatch Only)
 
 on:
-  schedule:
-    - cron: '*/20 * * * *'
   workflow_dispatch:
 
 jobs:
