@@ -295,6 +295,34 @@ def run_playwright_autonomous():
                 # Periodic loop (every 15 minutes)
                 while True:
                     time.sleep(CHECK_INTERVAL_SECONDS)
+
+                    # 1. Проверяем, появились ли на сервере более свежие куки
+                    new_cookies, new_ver = fetch_cookies_from_server()
+                    if new_ver and new_ver > service_state.get("last_sync_version", 0):
+                        log(f"Found newer cookies on server (v{new_ver} > v{service_state.get('last_sync_version')}). Injecting...")
+                        pw_c = []
+                        for c in new_cookies:
+                            cname = c.get("name")
+                            cval = c.get("value")
+                            if not cname or not cval: continue
+                            ss = c.get("sameSite", "Lax")
+                            if ss == "no_restriction": ss = "None"
+                            elif ss not in ["Strict", "Lax", "None"]: ss = "Lax"
+                            pw_c.append({
+                                "name": cname,
+                                "value": cval,
+                                "domain": c.get("domain", ".google.com"),
+                                "path": c.get("path", "/"),
+                                "secure": c.get("secure", True),
+                                "httpOnly": c.get("httpOnly", False),
+                                "sameSite": ss
+                            })
+                        try:
+                            context.add_cookies(pw_c)
+                            service_state["last_sync_version"] = new_ver
+                        except Exception as ce:
+                            log(f"Cookie re-injection warning: {ce}")
+
                     try:
                         log("[KEEPALIVE] Periodic navigation to Flow to rotate tokens...")
                         page.goto(FLOW_URL, wait_until="commit", timeout=35000)
@@ -321,6 +349,10 @@ def run_playwright_autonomous():
                     service_state["last_page_url"] = current_url
                     service_state["page_title"] = page_title
                     service_state["session_valid"] = is_valid
+
+                    if not is_valid:
+                        log("Session invalid or redirected to login. Breaking to re-initialize browser context...")
+                        break
 
                     changed_keys = [k for k, v in live_tokens.items() if known_tokens.get(k) != v]
                     if changed_keys and is_valid:
