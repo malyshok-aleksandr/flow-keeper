@@ -2,33 +2,30 @@ import os
 import sys
 import json
 import time
+import socket
+import base64
 import threading
 import urllib.request
 import urllib.error
-import gc
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Configuration
-PROXY_URL = os.environ.get("PROXY_URL", "http://14a93721ee7fb:8c22cf1655@154.6.39.142:12323")
 SYNC_URL = os.environ.get("SYNC_URL", "https://all-creator.bio.co.ua/flow/sync_cookies.php")
 SECRET_KEY = os.environ.get("SYNC_SECRET", "FLOW_ULTRA_AUTO_SYNC_2026_SECRET_KEY")
-FLOW_URL = os.environ.get("FLOW_URL", "https://flow.google.com/project/ae3718da-d85b-4133-bef9-bd999fa677fc")
+FLOW_URL = os.environ.get("FLOW_URL", "https://flow.google.com/")
 PROFILE_DIR = os.environ.get("PROFILE_DIR", "/app/chrome_profile")
 PORT = int(os.environ.get("PORT", 8080))
-CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL", 600))  # 10 minutes
+CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL", 900))  # 15 minutes (Zomro pattern)
 
-# Parse proxy components for Playwright
-proxy_parts = PROXY_URL.replace("http://", "").replace("https://", "").split("@")
-if len(proxy_parts) == 2:
-    creds, host_port = proxy_parts
-    p_user, p_pass = creds.split(":")
-    p_server = f"http://{host_port}"
-else:
-    p_server = PROXY_URL
-    p_user, p_pass = None, None
+PROXY_HOST = os.environ.get("PROXY_HOST", "154.6.39.142")
+PROXY_PORT = int(os.environ.get("PROXY_PORT", 12323))
+PROXY_USER = os.environ.get("PROXY_USER", "14a93721ee7fb")
+PROXY_PASS = os.environ.get("PROXY_PASS", "8c22cf1655")
+LOCAL_BRIDGE_PORT = 8899
+AUTH_HEADER = base64.b64encode(f"{PROXY_USER}:{PROXY_PASS}".encode()).decode()
 
 service_state = {
-    "service": "Flow Ultra Render CloudKeeper (Playwright Persistent)",
+    "service": "Flow Ultra Render CloudKeeper (Zomro Engine 24/7)",
     "mode": "initializing",
     "uptime_start": time.strftime("%Y-%m-%d %H:%M:%S"),
     "last_check_time": None,
@@ -44,6 +41,63 @@ service_state = {
 def log(msg):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 
+# ----------------- LOCAL PROXY BRIDGE (Exact Zomro VPS implementation) -----------------
+def handle_client(client_socket):
+    try:
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = client_socket.recv(4096)
+            if not chunk: break
+            data += chunk
+        if not data:
+            client_socket.close()
+            return
+        header_part, rest = data.split(b"\r\n\r\n", 1)
+        lines = header_part.split(b"\r\n")
+        req_line = lines[0]
+        new_lines = [req_line, f"Proxy-Authorization: Basic {AUTH_HEADER}".encode()]
+        for line in lines[1:]:
+            if not line.lower().startswith(b"proxy-authorization"):
+                new_lines.append(line)
+        new_request = b"\r\n".join(new_lines) + b"\r\n\r\n" + rest
+        upstream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        upstream.connect((PROXY_HOST, PROXY_PORT))
+        upstream.sendall(new_request)
+        def pipe(src, dst):
+            try:
+                while True:
+                    buf = src.recv(32768)
+                    if not buf: break
+                    dst.sendall(buf)
+            except: pass
+            finally:
+                try: src.close()
+                except: pass
+                try: dst.close()
+                except: pass
+        threading.Thread(target=pipe, args=(client_socket, upstream), daemon=True).start()
+        threading.Thread(target=pipe, args=(upstream, client_socket), daemon=True).start()
+    except:
+        try: client_socket.close()
+        except: pass
+
+def start_local_bridge(port=LOCAL_BRIDGE_PORT):
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        server.bind(("127.0.0.1", port))
+        server.listen(128)
+        log(f"[BRIDGE] Local proxy bridge running on 127.0.0.1:{port} -> {PROXY_HOST}:{PROXY_PORT}")
+        while True:
+            conn, _ = server.accept()
+            threading.Thread(target=handle_client, args=(conn,), daemon=True).start()
+    except Exception as e:
+        log(f"[BRIDGE] Error: {e}")
+
+threading.Thread(target=start_local_bridge, daemon=True).start()
+time.sleep(1)
+
+# ----------------- COOKIE SYNC -----------------
 def fetch_cookies_from_server():
     try:
         req = urllib.request.Request(
@@ -66,15 +120,16 @@ def push_cookies_to_server(cookies_list):
                 "secret": SECRET_KEY,
                 "action": "sync",
                 "email": "vps_autokeeper@all-creator.bio.co.ua",
-                "device_name": "Render-Playwright-24-7",
+                "device_name": "Render-ZomroEngine-24-7",
                 "cookies": cookies_list
             }).encode(),
             headers={"Content-Type": "application/json"}
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
             res = json.loads(resp.read().decode())
-            log(f"Push to server response: {res.get('status')} - v{res.get('version')}")
-            return res.get("version")
+            ver = res.get("version")
+            log(f"Push to server response: {res.get('status')} - v{ver}")
+            return ver
     except Exception as e:
         log(f"Error pushing updated cookies to server: {e}")
         return None
@@ -110,33 +165,30 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(b"Not Found")
 
     def log_message(self, format, *args):
-        # Silence default request access logs
         return
+
+def run_http_server():
+    server = HTTPServer(("0.0.0.0", PORT), HealthRequestHandler)
+    log(f"Health status server listening on port {PORT}")
+    server.serve_forever()
 
 # ============================================================
 # PLAYWRIGHT PERSISTENT BROWSER ENGINE (Exact Zomro VPS Replica)
 # ============================================================
 def run_playwright_autonomous():
     global service_state
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        log("Playwright not installed in this environment. Falling back to HTTP Keepalive mode...")
-        run_http_fallback()
-        return
+    from playwright.sync_api import sync_playwright
 
-    log("Starting Playwright 24/7 Persistent Browser Engine...")
+    log("Starting Playwright 24/7 Persistent Chromium Engine...")
     service_state["mode"] = "playwright_persistent"
-
     os.makedirs(PROFILE_DIR, exist_ok=True)
 
     while True:
         try:
-            # 1. Fetch authoritative cookies from hosting
             raw_cookies, server_version = fetch_cookies_from_server()
             if not raw_cookies:
-                log("No cookies received from hosting. Retrying in 60s...")
-                time.sleep(60)
+                log("No cookies received from hosting. Retrying in 30s...")
+                time.sleep(30)
                 continue
 
             service_state["last_sync_version"] = server_version
@@ -146,18 +198,14 @@ def run_playwright_autonomous():
                 if c.get("name") in ["__Secure-1PSIDTS", "__Secure-1PSIDRTS", "__Secure-3PSIDTS", "__Secure-3PSIDRTS"]
             }
 
-            # Convert to Playwright format
             pw_cookies = []
             for c in raw_cookies:
                 cname = c.get("name")
                 cval = c.get("value")
-                if not cname or not cval:
-                    continue
+                if not cname or not cval: continue
                 same_site = c.get("sameSite", "Lax")
-                if same_site == "no_restriction":
-                    same_site = "None"
-                elif same_site not in ["Strict", "Lax", "None"]:
-                    same_site = "Lax"
+                if same_site == "no_restriction": same_site = "None"
+                elif same_site not in ["Strict", "Lax", "None"]: same_site = "Lax"
 
                 pw_cookies.append({
                     "name": cname,
@@ -169,18 +217,13 @@ def run_playwright_autonomous():
                     "sameSite": same_site
                 })
 
-            log(f"Launching persistent Chromium via US proxy ({p_server}) into {FLOW_URL}...")
+            log(f"Launching persistent Chromium via local bridge into {FLOW_URL}...")
 
             with sync_playwright() as p:
-                proxy_config = {"server": p_server}
-                if p_user and p_pass:
-                    proxy_config["username"] = p_user
-                    proxy_config["password"] = p_pass
-
                 context = p.chromium.launch_persistent_context(
                     user_data_dir=PROFILE_DIR,
                     headless=True,
-                    proxy=proxy_config,
+                    proxy={"server": f"http://127.0.0.1:{LOCAL_BRIDGE_PORT}"},
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
                     viewport={"width": 1400, "height": 900},
                     args=[
@@ -189,75 +232,81 @@ def run_playwright_autonomous():
                         "--disable-dev-shm-usage",
                         "--disable-gpu",
                         "--disable-blink-features=AutomationControlled",
-                        "--disable-background-networking",
-                        "--disable-default-apps",
-                        "--disable-extensions",
-                        "--mute-audio",
-                        "--no-first-run"
+                        "--no-first-run",
+                        "--disable-default-apps"
                     ]
                 )
 
-                # Route abort heavy static media (png, jpg, mp4) to conserve memory & bandwidth
-                def block_media(route):
-                    req = route.request
-                    if req.resource_type in ["image", "media", "font"]:
-                        route.abort()
-                    else:
-                        route.continue_()
-
                 page = context.pages[0] if context.pages else context.new_page()
-                page.route("**/*", block_media)
-
-                # Inject cookies into persistent profile
                 context.add_cookies(pw_cookies)
 
-                log(f"Navigating to Flow Project URL: {FLOW_URL}...")
+                log(f"Navigating to Flow: {FLOW_URL}...")
                 try:
-                    page.goto(FLOW_URL, wait_until="domcontentloaded", timeout=45000)
+                    page.goto(FLOW_URL, wait_until="commit", timeout=30000)
+                    page.wait_for_timeout(8000)
                 except Exception as e:
                     log(f"Initial navigation load warning: {e}")
-
-                time.sleep(10)
 
                 current_url = page.url
                 page_title = page.title()
 
-                # If landed on /about, try to click entry button
                 if "about" in current_url:
                     log("Landed on /about. Attempting auto-click into studio...")
                     try:
-                        create_btn = page.locator("button:has-text('Создать'), a:has-text('Создать'), button:has-text('Create'), a:has-text('Create')").first
+                        create_btn = page.locator("button:has-text('Создать'), a:has-text('Создать'), button:has-text('Create')").first
                         if create_btn and create_btn.is_visible():
                             create_btn.click()
-                            time.sleep(8)
+                            page.wait_for_timeout(8000)
                             current_url = page.url
                             page_title = page.title()
-                            log(f"After click: URL={current_url} | Title={page_title}")
                     except Exception as ce:
                         log(f"Auto-click warning: {ce}")
 
                 is_valid = "about" not in current_url and "accounts.google" not in current_url
-
                 service_state["last_check_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
                 service_state["last_page_url"] = current_url
                 service_state["page_title"] = page_title
                 service_state["session_valid"] = is_valid
 
-                log(f"Project loaded. URL: {current_url} | Title: {page_title} | Valid: {is_valid}")
+                log(f"Flow loaded. URL: {current_url} | Title: {page_title} | Valid: {is_valid}")
 
-                # Active maintenance loop
-                cycle_count = 0
+                # Initial sync
+                live_c = context.cookies()
+                if any(c.get("name") in ("SID", "SSID") for c in live_c):
+                    formatted = []
+                    for c in live_c:
+                        is_host_only = c.get("name") in ("OSID", "__Secure-OSID")
+                        dom = "flow.google.com" if is_host_only else c.get("domain", ".google.com")
+                        formatted.append({
+                            "domain": dom,
+                            "expirationDate": c.get("expires", time.time() + 31536000),
+                            "hostOnly": is_host_only,
+                            "httpOnly": c.get("httpOnly", True),
+                            "name": c.get("name"),
+                            "path": c.get("path", "/"),
+                            "sameSite": "no_restriction" if c.get("sameSite") == "None" else "lax",
+                            "secure": c.get("secure", True),
+                            "session": False,
+                            "storeId": None,
+                            "value": c.get("value")
+                        })
+                    push_cookies_to_server(formatted)
+
+                # Periodic loop (every 15 minutes)
                 while True:
                     time.sleep(CHECK_INTERVAL_SECONDS)
-                    cycle_count += 1
-
                     try:
-                        # 1. Gentle JavaScript pulse to trigger Angular background worker
-                        page.evaluate("() => document.title")
+                        log("[KEEPALIVE] Periodic navigation to Flow to rotate tokens...")
+                        page.goto(FLOW_URL, wait_until="commit", timeout=35000)
+                        page.wait_for_timeout(8000)
+                        if "about" in page.url:
+                            btn = page.locator("button:has-text('Создать'), a:has-text('Создать'), button:has-text('Create')").first
+                            if btn.is_visible():
+                                btn.click()
+                                page.wait_for_timeout(8000)
                     except Exception as e:
-                        log(f"Pulse error: {e}")
+                        log(f"Navigation error: {e}")
 
-                    # 2. Check cookies in active browser context
                     live_cookies = context.cookies()
                     live_tokens = {
                         c.get("name"): c.get("value")
@@ -273,19 +322,17 @@ def run_playwright_autonomous():
                     service_state["page_title"] = page_title
                     service_state["session_valid"] = is_valid
 
-                    # 3. Detect if Google rotated any rolling session tokens
                     changed_keys = [k for k, v in live_tokens.items() if known_tokens.get(k) != v]
-
                     if changed_keys and is_valid:
                         log(f"TOKENS ROTATED BY GOOGLE ({', '.join(changed_keys)})! Syncing to server...")
-                        
-                        # Format all cookies for hosting
                         updated_list = []
                         for lc in live_cookies:
+                            is_host_only = lc.get("name") in ("OSID", "__Secure-OSID")
+                            dom = "flow.google.com" if is_host_only else lc.get("domain", ".google.com")
                             updated_list.append({
-                                "domain": lc.get("domain", ".google.com"),
+                                "domain": dom,
                                 "expirationDate": lc.get("expires", time.time() + 31536000),
-                                "hostOnly": False,
+                                "hostOnly": is_host_only,
                                 "httpOnly": lc.get("httpOnly", True),
                                 "name": lc.get("name"),
                                 "path": lc.get("path", "/"),
@@ -295,88 +342,19 @@ def run_playwright_autonomous():
                                 "storeId": None,
                                 "value": lc.get("value")
                             })
-
                         new_ver = push_cookies_to_server(updated_list)
                         if new_ver:
-                            known_tokens.update(live_tokens)
                             service_state["rotated_count"] += 1
-                            service_state["last_rotated_tokens"] = changed_keys
                             service_state["last_sync_version"] = new_ver
-                            log(f"Server updated to v{new_ver} successfully.")
-                    else:
-                        log(f"Keepalive check OK (Cycle #{cycle_count}) - Active on {current_url}")
+                            service_state["last_rotated_tokens"] = changed_keys
+                            known_tokens = live_tokens
 
-                    # 4. Hourly gentle interaction to trigger Google's token renewal
-                    if cycle_count % 6 == 0:
-                        log("Hourly scheduled keepalive interaction in project...")
-                        try:
-                            page.evaluate("() => window.scrollTo(0, 100)")
-                            time.sleep(1)
-                            page.evaluate("() => window.scrollTo(0, 0)")
-                        except Exception as re_err:
-                            log(f"Interaction warning: {re_err}")
-                        gc.collect()
-
-                    # 5. Prevent memory buildup: refresh context every 24 hours
-                    if cycle_count >= 144:
-                        log("24-hour cycle reached. Restarting browser context cleanly...")
-                        break
-
-                context.close()
-                log("Browser context closed. Starting fresh cycle...")
-
-        except Exception as loop_err:
-            log(f"Playwright cycle encountered error: {loop_err}")
-            service_state["error"] = str(loop_err)
-            time.sleep(30)
-
-# ============================================================
-# HTTP FALLBACK ENGINE
-# ============================================================
-def run_http_fallback():
-    global service_state
-    log("Running in HTTP Keepalive Fallback Mode...")
-    service_state["mode"] = "http_fallback"
-
-    proxy_handler = urllib.request.ProxyHandler({"http": PROXY_URL, "https": PROXY_URL})
-    opener = urllib.request.build_opener(proxy_handler)
-
-    while True:
-        try:
-            cookies, ver = fetch_cookies_from_server()
-            if cookies:
-                cookie_hdr = "; ".join([f"{c['name']}={c['value']}" for c in cookies if "name" in c and "value" in c])
-                req = urllib.request.Request(
-                    FLOW_URL,
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                        "Cookie": cookie_hdr
-                    }
-                )
-                with opener.open(req, timeout=20) as r:
-                    service_state["last_check_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                    service_state["last_page_url"] = r.geturl()
-                    service_state["session_valid"] = "about" not in r.geturl() and "accounts" not in r.geturl()
-                    log(f"HTTP Keepalive Ping: {r.status} -> {r.geturl()}")
         except Exception as e:
-            log(f"HTTP Fallback error: {e}")
+            log(f"Autonomous engine error: {e}")
             service_state["error"] = str(e)
+            time.sleep(20)
 
-        time.sleep(CHECK_INTERVAL_SECONDS)
-
-# ============================================================
-# MAIN ENTRYPOINT
-# ============================================================
 if __name__ == "__main__":
-    log(f"Starting Flow Ultra CloudKeeper Web Server on port {PORT}...")
-
-    # Start autonomous worker thread
-    t = threading.Thread(target=run_playwright_autonomous, daemon=True)
-    t.start()
-
-    server = HTTPServer(("0.0.0.0", PORT), HealthRequestHandler)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        log("Stopping server...")
-        server.server_close()
+    t_http = threading.Thread(target=run_http_server, daemon=True)
+    t_http.start()
+    run_playwright_autonomous()
