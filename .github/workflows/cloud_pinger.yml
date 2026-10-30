@@ -1,0 +1,16 @@
+name: Flow Ultra 24-7 Cloud Pinger
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Render Keeper (Prevents sleeping)
+        run: curl -s --max-time 20 "https://flow-keeper-1.onrender.com/keepalive" || true
+
+      - name: Ping Server Watchdog
+        run: curl -s --max-time 20 "https://all-creator.bio.co.ua/flow/cron_keepalive.php" || true
