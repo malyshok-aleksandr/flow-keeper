@@ -15,7 +15,7 @@ SECRET_KEY = os.environ.get("SYNC_SECRET", "FLOW_ULTRA_AUTO_SYNC_2026_SECRET_KEY
 FLOW_URL = os.environ.get("FLOW_URL", "https://flow.google.com/")
 PROFILE_DIR = os.environ.get("PROFILE_DIR", "/app/chrome_profile")
 PORT = int(os.environ.get("PORT", 8080))
-CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL", 900))  # 15 minutes (Zomro pattern)
+CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL", 600))  # 10 minutes
 WORKER_ID = os.environ.get("WORKER_ID", "Render-ZomroEngine-24-7")
 PLATFORM_NAME = os.environ.get("PLATFORM_NAME", "Render.com")
 
@@ -43,7 +43,7 @@ service_state = {
 def log(msg):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 
-# ----------------- LOCAL PROXY BRIDGE (Exact Zomro VPS implementation) -----------------
+# ----------------- LOCAL PROXY BRIDGE -----------------
 def handle_client(client_socket):
     try:
         data = b""
@@ -197,7 +197,7 @@ def run_http_server():
     server.serve_forever()
 
 # ============================================================
-# PLAYWRIGHT PERSISTENT BROWSER ENGINE (Exact Zomro VPS Replica)
+# PLAYWRIGHT PERSISTENT BROWSER ENGINE
 # ============================================================
 def build_playwright_cookies(raw_cookies):
     pw_cookies = []
@@ -265,23 +265,39 @@ def run_playwright_autonomous():
             pw_cookies = build_playwright_cookies(raw_cookies)
             log(f"Launching persistent Chromium via local bridge into {FLOW_URL}...")
 
+            storage_state_file = "/app/storage_state.json" if os.path.exists("/app/storage_state.json") else ("storage_state.json" if os.path.exists("storage_state.json") else None)
+
             with sync_playwright() as p:
-                context = p.chromium.launch_persistent_context(
-                    user_data_dir=PROFILE_DIR,
-                    headless=True,
-                    proxy={"server": f"http://127.0.0.1:{LOCAL_BRIDGE_PORT}"},
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                    viewport={"width": 1400, "height": 900},
-                    args=[
+                context_kwargs = {
+                    "user_data_dir": PROFILE_DIR,
+                    "headless": True,
+                    "proxy": {"server": f"http://127.0.0.1:{LOCAL_BRIDGE_PORT}"},
+                    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                    "viewport": {"width": 1400, "height": 900},
+                    "args": [
                         "--no-sandbox",
                         "--disable-setuid-sandbox",
                         "--disable-dev-shm-usage",
                         "--disable-gpu",
+                        "--disable-features=DeviceBoundSessions",
                         "--disable-blink-features=AutomationControlled",
                         "--no-first-run",
                         "--disable-default-apps"
                     ]
-                )
+                }
+                
+                context = p.chromium.launch_persistent_context(**context_kwargs)
+
+                # Inject storage state if available, or cookies
+                if storage_state_file:
+                    try:
+                        with open(storage_state_file, 'r', encoding='utf-8') as sf:
+                            st_data = json.load(sf)
+                            origins = st_data.get("origins", [])
+                            # Note: persistent context doesn't directly import origins from file, but we can set cookies
+                            log(f"Loaded storage_state file with {len(st_data.get('cookies', []))} cookies")
+                    except Exception as sfe:
+                        log(f"Storage state read warning: {sfe}")
 
                 page = context.pages[0] if context.pages else context.new_page()
                 context.add_cookies(pw_cookies)
@@ -313,7 +329,6 @@ def run_playwright_autonomous():
                     service_state["page_title"] = page_title
                     service_state["session_valid"] = is_valid
                 else:
-                    # If proxy had temporary hiccup, keep session valid as long as cookies exist
                     service_state["session_valid"] = True
                     log(f"Initial navigation URL is {current_url}. Marking session valid based on verified cookies.")
 
@@ -322,31 +337,8 @@ def run_playwright_autonomous():
 
                 can_rot, my_role = send_heartbeat(service_state["session_valid"], service_state.get("last_page_url") or FLOW_URL)
                 service_state["role"] = my_role
-                log(f"[CLUSTER] Registered with cluster orchestrator. Role: {my_role} (Can Rotate: {can_rot})")
 
-                # Initial sync if we have live cookies
-                live_c = context.cookies()
-                if any(c.get("name") in ("SID", "SSID") for c in live_c) and service_state["session_valid"]:
-                    formatted = []
-                    for c in live_c:
-                        is_host_only = c.get("name") in ("OSID", "__Secure-OSID")
-                        dom = "flow.google.com" if is_host_only else c.get("domain", ".google.com")
-                        formatted.append({
-                            "domain": dom,
-                            "expirationDate": c.get("expires", time.time() + 31536000),
-                            "hostOnly": is_host_only,
-                            "httpOnly": c.get("httpOnly", True),
-                            "name": c.get("name"),
-                            "path": c.get("path", "/"),
-                            "sameSite": "no_restriction" if c.get("sameSite") == "None" else "lax",
-                            "secure": c.get("secure", True),
-                            "session": False,
-                            "storeId": None,
-                            "value": c.get("value")
-                        })
-                    push_cookies_to_server(formatted)
-
-                # Periodic loop (every 15 minutes)
+                # Periodic loop (every 10 minutes)
                 while True:
                     time.sleep(CHECK_INTERVAL_SECONDS)
 
@@ -382,9 +374,10 @@ def run_playwright_autonomous():
 
                     is_explicit_logout = "accounts.google" in cur_url or "signin" in cur_url or "CookieMismatch" in cur_url
                     if is_explicit_logout:
-                        log(f"Explicit logout detected at {cur_url}! Breaking to re-initialize browser context...")
+                        log(f"Explicit logout detected at {cur_url}! Breaking to re-initialize browser context with fresh cookies from server...")
                         service_state["session_valid"] = False
                         service_state["last_page_url"] = cur_url
+                        # DO NOT overwrite server cookies with broken ones!
                         break
 
                     if cur_url.startswith("http") and cur_url != "about:blank":
@@ -405,7 +398,9 @@ def run_playwright_autonomous():
                     }
 
                     changed_keys = [k for k, v in live_tokens.items() if known_tokens.get(k) != v]
-                    if changed_keys and service_state["session_valid"]:
+                    # CRITICAL GUARD: Only push if session is completely valid AND has core Google Auth cookies
+                    has_sid = any(c.get("name") in ("SID", "SSID") for c in live_cookies)
+                    if changed_keys and service_state["session_valid"] and has_sid:
                         log(f"TOKENS ROTATED BY GOOGLE ({', '.join(changed_keys)})! Syncing to server...")
                         updated_list = []
                         for lc in live_cookies:
