@@ -15,7 +15,7 @@ SECRET_KEY = os.environ.get("SYNC_SECRET", "FLOW_ULTRA_AUTO_SYNC_2026_SECRET_KEY
 FLOW_URL = os.environ.get("FLOW_URL", "https://flow.google.com/?pli=1")
 PROFILE_DIR = os.environ.get("PROFILE_DIR", "/app/chrome_profile")
 PORT = int(os.environ.get("PORT", 8080))
-CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL", 600))  # 10 minutes
+CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL", 180))  # 3 minutes
 WORKER_ID = os.environ.get("WORKER_ID", "Render-ZomroEngine-24-7")
 PLATFORM_NAME = os.environ.get("PLATFORM_NAME", "Render.com")
 
@@ -243,7 +243,6 @@ def build_playwright_cookies(raw_cookies):
         entry = {
             "name": cname,
             "value": cval,
-            "path": c.get("path", "/"),
             "secure": bool(c.get("secure", True)),
             "httpOnly": bool(c.get("httpOnly", False)),
             "sameSite": same_site
@@ -252,6 +251,7 @@ def build_playwright_cookies(raw_cookies):
             entry["url"] = f"https://{rule['domain']}/"
         else:
             entry["domain"] = rule["domain"]
+            entry["path"] = c.get("path", "/")
 
         pw_cookies.append(entry)
     return pw_cookies
