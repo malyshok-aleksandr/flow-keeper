@@ -259,17 +259,12 @@ def build_playwright_cookies(raw_cookies):
 def handle_flow_navigation_page(page):
     try:
         cur_url = page.url
+        # SAFEGUARD: Never click signin / landing buttons on /about because they redirect to accounts.google.com!
+        # Instead, if landed on /about, re-navigate cleanly to https://flow.google.com/?pli=1
         if "flow.google.com/about" in cur_url:
-            log("Detected /about page. Clicking 'Create with Google Flow' button...")
-            page.evaluate("""() => {
-                const btn = document.querySelector('button.flow-button.variant-primary, flow-button button, button.cta-button') ||
-                            Array.from(document.querySelectorAll('button')).find(b => {
-                                const t = (b.textContent || '').toLowerCase();
-                                return (t.includes('создать') || t.includes('create')) && !t.includes('войти') && !t.includes('sign in');
-                            });
-                if (btn) btn.click();
-            }""")
-            page.wait_for_timeout(4000)
+            log("Detected /about landing page. Re-navigating cleanly to https://flow.google.com/?pli=1...")
+            page.goto("https://flow.google.com/?pli=1", wait_until="domcontentloaded", timeout=45000)
+            page.wait_for_timeout(3000)
         
         if "accountchooser" in page.url:
             log("Detected Account Chooser. Selecting active account...")
@@ -282,7 +277,7 @@ def handle_flow_navigation_page(page):
                     }
                 }
             }""")
-            page.wait_for_timeout(4000)
+            page.wait_for_timeout(3000)
     except Exception as e:
         log(f"Handle navigation warning: {e}")
 
@@ -348,6 +343,10 @@ def run_playwright_autonomous():
                 }
                 
                 context = p.chromium.launch_persistent_context(**context_kwargs)
+                try:
+                    context.clear_cookies()
+                except Exception:
+                    pass
                 context.add_cookies(pw_cookies)
 
                 page = context.pages[0] if context.pages else context.new_page()
