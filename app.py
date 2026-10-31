@@ -460,7 +460,69 @@ def run_playwright_autonomous():
             service_state["error"] = str(e)
             time.sleep(20)
 
+
+def run_http_session_pulse():
+    """
+    Method 4: Autonomous Lightweight HTTP Session Pulse Engine.
+    Sends keepalive HTTP pulses with full cookies through US proxy every 90 seconds.
+    Maintains session activity at zero RAM/CPU cost without browser overhead.
+    """
+    log("Method 4: Lightweight HTTP Session Pulse Engine STARTED (Double-Layer Protection)...")
+    time.sleep(30) # Initial stagger
+    while True:
+        try:
+            time.sleep(90) # Every 90 seconds (1.5 min)
+            raw_cookies, _ = fetch_cookies_from_server()
+            if not raw_cookies:
+                continue
+
+            cookie_parts = []
+            for c in raw_cookies:
+                name = c.get('name')
+                val = c.get('value')
+                if name and val:
+                    cookie_parts.append(f"{name}={val}")
+            
+            cookie_hdr = "; ".join(cookie_parts)
+            proxy_url = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}"
+            proxy_h = urllib.request.ProxyHandler({'http': proxy_url, 'https': proxy_url})
+            opener = urllib.request.build_opener(proxy_h)
+
+            req = urllib.request.Request(
+                "https://flow.google.com/?pli=1",
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                    "Cookie": cookie_hdr,
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
+                    "Cache-Control": "no-cache",
+                    "Pragma": "no-cache"
+                }
+            )
+            resp = opener.open(req, timeout=25)
+            status_code = resp.getcode()
+            eff_url = resp.geturl()
+            set_cookies = resp.headers.get_all('Set-Cookie', [])
+            
+            service_state["http_pulse"] = {
+                "last_pulse": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "status": status_code,
+                "url": eff_url,
+                "set_cookie_count": len(set_cookies)
+            }
+            log(f"[METHOD-4 HTTP-PULSE] Google Flow pulse: HTTP {status_code} on {eff_url} (Set-Cookie: {len(set_cookies)})")
+
+        except Exception as e:
+            service_state["http_pulse"] = {
+                "last_pulse": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "error": str(e)
+            }
+            log(f"[METHOD-4 HTTP-PULSE] Warning: {e}")
+
 if __name__ == "__main__":
     t_http = threading.Thread(target=run_http_server, daemon=True)
     t_http.start()
+    t_pulse = threading.Thread(target=run_http_session_pulse, daemon=True)
+    t_pulse.start()
+    log("Started threads: HTTP Webhook Server & Method 4 HTTP Pulse Engine")
     run_playwright_autonomous()
