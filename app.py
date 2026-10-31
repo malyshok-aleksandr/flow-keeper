@@ -199,18 +199,27 @@ def run_http_server():
 # ============================================================
 # PLAYWRIGHT PERSISTENT BROWSER ENGINE
 # ============================================================
+CLEAN_WHITELIST_NAMES = [
+    '_ga', 'NID', 'OSID', '__Secure-OSID', 'SID', '__Secure-1PSID', '__Secure-3PSID',
+    'HSID', 'SSID', 'APISID', 'SAPISID', '__Secure-1PAPISID', '__Secure-3PAPISID',
+    '__Secure-1PSIDTS', '__Secure-3PSIDTS', '_ga_X2GNH8R5NS', 'SIDCC', '__Secure-1PSIDCC', '__Secure-3PSIDCC'
+]
+
 def build_playwright_cookies(raw_cookies):
     pw_cookies = []
     for c in raw_cookies:
         cname = c.get("name")
         cval = c.get("value")
         if not cname or not cval: continue
+        if cname not in CLEAN_WHITELIST_NAMES: continue
+        
         same_site = c.get("sameSite", "Lax")
         if same_site == "no_restriction": same_site = "None"
         elif same_site not in ["Strict", "Lax", "None"]: same_site = "Lax"
 
         is_host = c.get("hostOnly") or cname in ["OSID", "__Secure-OSID"]
         target_domain = "flow.google.com" if is_host else c.get("domain", ".google.com")
+        if "accounts.google" in target_domain: continue
 
         entry = {
             "name": cname,
@@ -321,6 +330,19 @@ def run_playwright_autonomous():
                     except Exception as ce:
                         log(f"Auto-click warning: {ce}")
 
+                if "accountchooser" in current_url:
+                    log("Landed on accountchooser. Attempting auto-click account item...")
+                    try:
+                        acc_item = page.locator("[data-identifier], [data-email], [data-profileidentifier], li[role='link'], div[role='link'], ul li div[role='button']").first
+                        if acc_item and acc_item.is_visible():
+                            acc_item.click()
+                            page.wait_for_timeout(8000)
+                            current_url = page.url
+                            try: page_title = page.title()
+                            except Exception: pass
+                    except Exception as ace:
+                        log(f"Account chooser auto-click warning: {ace}")
+
                 is_explicit_logout = "accounts.google" in current_url or "CookieMismatch" in current_url or "signin" in current_url
                 is_valid = not is_explicit_logout and "flow.google.com/about" not in current_url
 
@@ -372,6 +394,16 @@ def run_playwright_autonomous():
                         except Exception as be:
                             log(f"Button click error: {be}")
 
+                    if "accountchooser" in cur_url:
+                        try:
+                            acc_item = page.locator("[data-identifier], [data-email], [data-profileidentifier], li[role='link'], div[role='link'], ul li div[role='button']").first
+                            if acc_item and acc_item.is_visible():
+                                acc_item.click()
+                                page.wait_for_timeout(8000)
+                                cur_url = page.url
+                        except Exception as ace:
+                            log(f"Account chooser click error: {ace}")
+
                     is_explicit_logout = "accounts.google" in cur_url or "signin" in cur_url or "CookieMismatch" in cur_url
                     if is_explicit_logout:
                         log(f"Explicit logout detected at {cur_url}! Breaking to re-initialize browser context with fresh cookies from server...")
@@ -398,33 +430,44 @@ def run_playwright_autonomous():
                     }
 
                     changed_keys = [k for k, v in live_tokens.items() if known_tokens.get(k) != v]
-                    # CRITICAL GUARD: Only push if session is completely valid AND has core Google Auth cookies
+                    # CRITICAL GUARD: Only push if session is completely valid AND has core Google Auth cookies AND not on accounts.google
                     has_sid = any(c.get("name") in ("SID", "SSID") for c in live_cookies)
-                    if changed_keys and service_state["session_valid"] and has_sid:
+                    if changed_keys and service_state["session_valid"] and has_sid and "accounts.google" not in cur_url:
                         log(f"TOKENS ROTATED BY GOOGLE ({', '.join(changed_keys)})! Syncing to server...")
                         updated_list = []
+                        now_ts = time.time()
                         for lc in live_cookies:
-                            is_host_only = lc.get("name") in ("OSID", "__Secure-OSID")
-                            dom = "flow.google.com" if is_host_only else lc.get("domain", ".google.com")
+                            cname = lc.get("name")
+                            if cname not in CLEAN_WHITELIST_NAMES:
+                                continue
+                            dom_raw = lc.get("domain", "")
+                            if "accounts.google" in dom_raw:
+                                continue
+                            is_host_only = cname in ("OSID", "__Secure-OSID")
+                            target_dom = "flow.google.com" if is_host_only else ".google.com"
+                            exp = float(lc.get("expires") or 0)
+                            if exp <= 0:
+                                exp = now_ts + 31536000
                             updated_list.append({
-                                "domain": dom,
-                                "expirationDate": lc.get("expires", time.time() + 31536000),
+                                "domain": target_dom,
+                                "expirationDate": exp,
                                 "hostOnly": is_host_only,
-                                "httpOnly": lc.get("httpOnly", True),
-                                "name": lc.get("name"),
+                                "httpOnly": bool(lc.get("httpOnly", True)),
+                                "name": cname,
                                 "path": lc.get("path", "/"),
-                                "sameSite": "no_restriction" if lc.get("sameSite") == "None" else "lax",
-                                "secure": lc.get("secure", True),
+                                "sameSite": "no_restriction" if lc.get("sameSite") in ("None", "no_restriction") else "lax",
+                                "secure": bool(lc.get("secure", True)),
                                 "session": False,
                                 "storeId": None,
                                 "value": lc.get("value")
                             })
-                        new_ver = push_cookies_to_server(updated_list)
-                        if new_ver:
-                            service_state["rotated_count"] += 1
-                            service_state["last_sync_version"] = new_ver
-                            service_state["last_rotated_tokens"] = changed_keys
-                            known_tokens = live_tokens
+                        if len(updated_list) >= 10:
+                            new_ver = push_cookies_to_server(updated_list)
+                            if new_ver:
+                                service_state["rotated_count"] += 1
+                                service_state["last_sync_version"] = new_ver
+                                service_state["last_rotated_tokens"] = changed_keys
+                                known_tokens = live_tokens
 
         except Exception as e:
             log(f"Autonomous engine error: {e}")
