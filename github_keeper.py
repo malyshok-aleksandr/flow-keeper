@@ -8,7 +8,7 @@ import threading
 import urllib.request
 from playwright.sync_api import sync_playwright
 
-FLOW_URL = "https://flow.google.com/"
+FLOW_URL = "https://flow.google.com/?pli=1"
 SYNC_URL = os.environ.get("SYNC_URL", "https://all-creator.bio.co.ua/flow/sync_cookies.php")
 SYNC_SECRET = os.environ.get("SYNC_SECRET", "FLOW_ULTRA_AUTO_SYNC_2026_SECRET_KEY")
 
@@ -132,15 +132,19 @@ def main():
         if same_site == "no_restriction": same_site = "None"
         elif same_site not in ["Strict", "Lax", "None"]: same_site = "Lax"
 
-        pw_cookies.append({
+        entry = {
             "name": cname,
             "value": cval,
-            "domain": c.get("domain", ".google.com"),
-            "path": c.get("path", "/"),
             "secure": c.get("secure", True),
             "httpOnly": c.get("httpOnly", False),
             "sameSite": same_site
-        })
+        }
+        if c.get("hostOnly"):
+            entry["url"] = "https://flow.google.com"
+        else:
+            entry["domain"] = c.get("domain", ".google.com")
+            entry["path"] = c.get("path", "/")
+        pw_cookies.append(entry)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -173,15 +177,13 @@ def main():
         log(f"Landed on: URL={cur_url} | Title={cur_title}")
 
         if "about" in cur_url:
-            log("Landed on /about. Attempting entry click...")
+            log("Landed on /about. Applying safe reload with pli=1 parameter (no login clicks)...")
             try:
-                btn = page.locator("button:has-text('Создать'), a:has-text('Создать'), button:has-text('Create')").first
-                if btn and btn.is_visible():
-                    btn.click()
-                    page.wait_for_timeout(8000)
-                    log(f"After click: URL={page.url} | Title={page.title()}")
+                page.goto("https://flow.google.com/?pli=1", wait_until="commit", timeout=25000)
+                page.wait_for_timeout(5000)
+                log(f"After safe reload: URL={page.url} | Title={page.title()}")
             except Exception as ce:
-                log(f"Click notice: {ce}")
+                log(f"Reload notice: {ce}")
 
         # Extract live rotated cookies
         live_c = ctx.cookies()
