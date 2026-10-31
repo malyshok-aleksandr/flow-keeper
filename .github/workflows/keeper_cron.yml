@@ -1,6 +1,8 @@
-name: Flow Cloud Keeper (Manual Dispatch Only)
+name: Flow Ultra Cloud Keeper (Schedule & Dispatch)
 
 on:
+  schedule:
+    - cron: '*/30 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -22,6 +24,6 @@ jobs:
           pip install playwright==1.49.0
           playwright install --with-deps chromium
 
-      - name: Run Autonomous Flow Keeper
+      - name: Run Autonomous Flow Keeper (Strictly via 154.6.39.142 US Proxy)
         run: |
           python github_keeper.py
