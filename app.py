@@ -256,12 +256,43 @@ def build_playwright_cookies(raw_cookies):
         pw_cookies.append(entry)
     return pw_cookies
 
+def handle_flow_navigation_page(page):
+    try:
+        cur_url = page.url
+        if "flow.google.com/about" in cur_url:
+            log("Detected /about page. Clicking 'Create with Google Flow' button...")
+            page.evaluate("""() => {
+                const btn = document.querySelector('button.flow-button.variant-primary, flow-button button, button.cta-button') ||
+                            Array.from(document.querySelectorAll('button')).find(b => {
+                                const t = (b.textContent || '').toLowerCase();
+                                return (t.includes('создать') || t.includes('create')) && !t.includes('войти') && !t.includes('sign in');
+                            });
+                if (btn) btn.click();
+            }""")
+            page.wait_for_timeout(4000)
+        
+        if "accountchooser" in page.url:
+            log("Detected Account Chooser. Selecting active account...")
+            page.evaluate("""() => {
+                const item = document.querySelector('[data-identifier], [data-email], [data-profileidentifier], li[role="link"], div[role="link"]');
+                if (item) {
+                    const text = (item.textContent || '').toLowerCase();
+                    if (!text.includes('вы вышли') && !text.includes('signed out')) {
+                        item.click();
+                    }
+                }
+            }""")
+            page.wait_for_timeout(4000)
+    except Exception as e:
+        log(f"Handle navigation warning: {e}")
+
 def navigate_flow_with_retry(page, url=FLOW_URL, max_retries=3):
     for attempt in range(max_retries):
         try:
             log(f"Navigation attempt {attempt+1}/{max_retries} to {url}...")
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
             page.wait_for_timeout(6000)
+            handle_flow_navigation_page(page)
             cur = page.url
             if cur.startswith("http") and cur != "about:blank":
                 log(f"Navigation successful. URL: {cur}")
