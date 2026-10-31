@@ -12,7 +12,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 # Configuration
 SYNC_URL = os.environ.get("SYNC_URL", "https://all-creator.bio.co.ua/flow/sync_cookies.php")
 SECRET_KEY = os.environ.get("SYNC_SECRET", "FLOW_ULTRA_AUTO_SYNC_2026_SECRET_KEY")
-FLOW_URL = os.environ.get("FLOW_URL", "https://flow.google.com/")
+FLOW_URL = os.environ.get("FLOW_URL", "https://flow.google.com/?pli=1")
 PROFILE_DIR = os.environ.get("PROFILE_DIR", "/app/chrome_profile")
 PORT = int(os.environ.get("PORT", 8080))
 CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL", 600))  # 10 minutes
@@ -27,7 +27,7 @@ LOCAL_BRIDGE_PORT = 8899
 AUTH_HEADER = base64.b64encode(f"{PROXY_USER}:{PROXY_PASS}".encode()).decode()
 
 service_state = {
-    "service": "Flow Ultra Render CloudKeeper (Zomro Engine 24/7)",
+    "service": "Flow Ultra Render CloudKeeper (24/7 Zero-PC Engine)",
     "mode": "initializing",
     "uptime_start": time.strftime("%Y-%m-%d %H:%M:%S"),
     "last_check_time": None,
@@ -100,7 +100,7 @@ threading.Thread(target=start_local_bridge, daemon=True).start()
 time.sleep(1)
 
 # ----------------- COOKIE SYNC & COORDINATION -----------------
-def send_heartbeat(is_valid=True, current_url="https://flow.google.com/"):
+def send_heartbeat(is_valid=True, current_url="https://flow.google.com/?pli=1"):
     try:
         req = urllib.request.Request(
             SYNC_URL,
@@ -144,7 +144,7 @@ def push_cookies_to_server(cookies_list):
                 "secret": SECRET_KEY,
                 "action": "sync",
                 "email": "vps_autokeeper@all-creator.bio.co.ua",
-                "device_name": "Render-ZomroEngine-24-7",
+                "device_name": "Render-ZeroPC-Keeper-24-7",
                 "cookies": cookies_list
             }).encode(),
             headers={"Content-Type": "application/json"}
@@ -197,39 +197,62 @@ def run_http_server():
     server.serve_forever()
 
 # ============================================================
-# PLAYWRIGHT PERSISTENT BROWSER ENGINE
+# PLAYWRIGHT PERSISTENT BROWSER ENGINE (CLOUD 24/7)
 # ============================================================
-CLEAN_WHITELIST_NAMES = [
-    '_ga', 'NID', 'OSID', '__Secure-OSID', 'SID', '__Secure-1PSID', '__Secure-3PSID',
-    'HSID', 'SSID', 'APISID', 'SAPISID', '__Secure-1PAPISID', '__Secure-3PAPISID',
-    '__Secure-1PSIDTS', '__Secure-3PSIDTS', '_ga_X2GNH8R5NS', 'SIDCC', '__Secure-1PSIDCC', '__Secure-3PSIDCC'
-]
+CLEAN_WHITELIST = {
+    "_ga": {"domain": ".flow.google.com", "hostOnly": False},
+    "NID": {"domain": ".google.com", "hostOnly": False},
+    "OSID": {"domain": "flow.google.com", "hostOnly": True},
+    "__Secure-OSID": {"domain": "flow.google.com", "hostOnly": True},
+    "SID": {"domain": ".google.com", "hostOnly": False},
+    "__Secure-1PSID": {"domain": ".google.com", "hostOnly": False},
+    "__Secure-3PSID": {"domain": ".google.com", "hostOnly": False},
+    "HSID": {"domain": ".google.com", "hostOnly": False},
+    "SSID": {"domain": ".google.com", "hostOnly": False},
+    "APISID": {"domain": ".google.com", "hostOnly": False},
+    "SAPISID": {"domain": ".google.com", "hostOnly": False},
+    "__Secure-1PAPISID": {"domain": ".google.com", "hostOnly": False},
+    "__Secure-3PAPISID": {"domain": ".google.com", "hostOnly": False},
+    "__Secure-1PSIDTS": {"domain": ".google.com", "hostOnly": False},
+    "__Secure-3PSIDTS": {"domain": ".google.com", "hostOnly": False},
+    "_ga_X2GNH8R5NS": {"domain": ".flow.google.com", "hostOnly": False},
+    "SIDCC": {"domain": ".google.com", "hostOnly": False},
+    "__Secure-1PSIDCC": {"domain": ".google.com", "hostOnly": False},
+    "__Secure-3PSIDCC": {"domain": ".google.com", "hostOnly": False},
+    "OTZ": {"domain": "accounts.google.com", "hostOnly": False},
+    "ACCOUNT_CHOOSER": {"domain": "accounts.google.com", "hostOnly": False},
+    "LSID": {"domain": "accounts.google.com", "hostOnly": False},
+    "__Host-GAPS": {"domain": "accounts.google.com", "hostOnly": True},
+    "__Host-1PLSID": {"domain": "accounts.google.com", "hostOnly": True},
+    "__Host-3PLSID": {"domain": "accounts.google.com", "hostOnly": True}
+}
 
 def build_playwright_cookies(raw_cookies):
     pw_cookies = []
     for c in raw_cookies:
         cname = c.get("name")
         cval = c.get("value")
-        if not cname or not cval: continue
-        if cname not in CLEAN_WHITELIST_NAMES: continue
+        if not cname or not cval or cname not in CLEAN_WHITELIST:
+            continue
         
+        rule = CLEAN_WHITELIST[cname]
         same_site = c.get("sameSite", "Lax")
         if same_site == "no_restriction": same_site = "None"
         elif same_site not in ["Strict", "Lax", "None"]: same_site = "Lax"
 
-        is_host = c.get("hostOnly") or cname in ["OSID", "__Secure-OSID"]
-        target_domain = "flow.google.com" if is_host else c.get("domain", ".google.com")
-        if "accounts.google" in target_domain: continue
-
         entry = {
             "name": cname,
             "value": cval,
-            "domain": target_domain,
             "path": c.get("path", "/"),
-            "secure": c.get("secure", True),
-            "httpOnly": c.get("httpOnly", False),
+            "secure": bool(c.get("secure", True)),
+            "httpOnly": bool(c.get("httpOnly", False)),
             "sameSite": same_site
         }
+        if rule["hostOnly"] or cname.startswith("__Host-"):
+            entry["url"] = f"https://{rule['domain']}/"
+        else:
+            entry["domain"] = rule["domain"]
+
         pw_cookies.append(entry)
     return pw_cookies
 
@@ -252,7 +275,7 @@ def run_playwright_autonomous():
     global service_state
     from playwright.sync_api import sync_playwright
 
-    log("Starting Playwright 24/7 Persistent Chromium Engine...")
+    log("Starting Playwright 24/7 Cloud Chromium Engine (Independent of local PC)...")
     service_state["mode"] = "playwright_persistent"
     os.makedirs(PROFILE_DIR, exist_ok=True)
 
@@ -272,9 +295,7 @@ def run_playwright_autonomous():
             }
 
             pw_cookies = build_playwright_cookies(raw_cookies)
-            log(f"Launching persistent Chromium via local bridge into {FLOW_URL}...")
-
-            storage_state_file = "/app/storage_state.json" if os.path.exists("/app/storage_state.json") else ("storage_state.json" if os.path.exists("storage_state.json") else None)
+            log(f"Launching persistent Chromium via US-bridge into {FLOW_URL} with {len(pw_cookies)} cookies...")
 
             with sync_playwright() as p:
                 context_kwargs = {
@@ -296,20 +317,9 @@ def run_playwright_autonomous():
                 }
                 
                 context = p.chromium.launch_persistent_context(**context_kwargs)
-
-                # Inject storage state if available, or cookies
-                if storage_state_file:
-                    try:
-                        with open(storage_state_file, 'r', encoding='utf-8') as sf:
-                            st_data = json.load(sf)
-                            origins = st_data.get("origins", [])
-                            # Note: persistent context doesn't directly import origins from file, but we can set cookies
-                            log(f"Loaded storage_state file with {len(st_data.get('cookies', []))} cookies")
-                    except Exception as sfe:
-                        log(f"Storage state read warning: {sfe}")
+                context.add_cookies(pw_cookies)
 
                 page = context.pages[0] if context.pages else context.new_page()
-                context.add_cookies(pw_cookies)
 
                 current_url = navigate_flow_with_retry(page, FLOW_URL, max_retries=3)
                 try:
@@ -317,57 +327,25 @@ def run_playwright_autonomous():
                 except Exception:
                     page_title = "Google Flow"
 
-                if "flow.google.com/about" in current_url:
-                    log("Landed on /about. Attempting auto-click into studio...")
-                    try:
-                        create_btn = page.locator("button:has-text('Создать'), a:has-text('Создать'), button:has-text('Create')").first
-                        if create_btn and create_btn.is_visible():
-                            create_btn.click()
-                            page.wait_for_timeout(8000)
-                            current_url = page.url
-                            try: page_title = page.title()
-                            except Exception: page_title = "Google Flow"
-                    except Exception as ce:
-                        log(f"Auto-click warning: {ce}")
-
-                if "accountchooser" in current_url:
-                    log("Landed on accountchooser. Attempting auto-click account item...")
-                    try:
-                        acc_item = page.locator("[data-identifier], [data-email], [data-profileidentifier], li[role='link'], div[role='link'], ul li div[role='button']").first
-                        if acc_item and acc_item.is_visible():
-                            acc_item.click()
-                            page.wait_for_timeout(8000)
-                            current_url = page.url
-                            try: page_title = page.title()
-                            except Exception: pass
-                    except Exception as ace:
-                        log(f"Account chooser auto-click warning: {ace}")
-
                 is_explicit_logout = "accounts.google" in current_url or "CookieMismatch" in current_url or "signin" in current_url
                 is_valid = not is_explicit_logout and "flow.google.com/about" not in current_url
 
-                if current_url.startswith("http") and current_url != "about:blank":
-                    service_state["last_page_url"] = current_url
-                    service_state["page_title"] = page_title
-                    service_state["session_valid"] = is_valid
-                else:
-                    service_state["session_valid"] = True
-                    log(f"Initial navigation URL is {current_url}. Marking session valid based on verified cookies.")
-
+                service_state["last_page_url"] = current_url
+                service_state["page_title"] = page_title
+                service_state["session_valid"] = is_valid
                 service_state["last_check_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                log(f"Flow loaded. URL: {service_state['last_page_url']} | Title: {service_state['page_title']} | Valid: {service_state['session_valid']}")
 
-                can_rot, my_role = send_heartbeat(service_state["session_valid"], service_state.get("last_page_url") or FLOW_URL)
-                service_state["role"] = my_role
+                log(f"Flow initial state: URL={current_url} | Title={page_title} | Valid={is_valid}")
+                send_heartbeat(is_valid, current_url)
 
-                # Periodic loop (every 10 minutes)
+                # 24/7 Continuous Loop (runs even when user PC is turned off)
                 while True:
                     time.sleep(CHECK_INTERVAL_SECONDS)
 
-                    # 1. Check if newer cookies appeared on central server
+                    # Check if newer cookies were pushed from anywhere
                     new_cookies, new_ver = fetch_cookies_from_server()
                     if new_ver and new_ver > service_state.get("last_sync_version", 0):
-                        log(f"Found newer cookies on server (v{new_ver} > v{service_state.get('last_sync_version')}). Injecting...")
+                        log(f"Newer cookies on server (v{new_ver} > v{service_state.get('last_sync_version')}). Injecting...")
                         pw_c = build_playwright_cookies(new_cookies)
                         try:
                             context.add_cookies(pw_c)
@@ -375,53 +353,33 @@ def run_playwright_autonomous():
                         except Exception as ce:
                             log(f"Cookie re-injection warning: {ce}")
 
-                    can_rot, my_role = send_heartbeat(service_state.get("session_valid", True), service_state.get("last_page_url", FLOW_URL))
-                    service_state["role"] = my_role
-                    if not can_rot:
-                        log(f"[CLUSTER] Standby mode active. Master lease owned by another keeper. Standing by...")
-                        continue
+                    log("[KEEPALIVE] Activity pulse on Google Flow to rotate tokens...")
+                    try:
+                        page.evaluate("window.scrollTo(0, 100);")
+                        page.wait_for_timeout(1000)
+                        page.evaluate("window.scrollTo(0, 0);")
+                    except Exception as pe:
+                        log(f"Activity scroll error: {pe}")
 
-                    log("[KEEPALIVE] Periodic navigation to Flow to rotate tokens...")
+                    # Refresh Flow URL periodically to trigger token refresh
                     cur_url = navigate_flow_with_retry(page, FLOW_URL, max_retries=2)
-
-                    if "flow.google.com/about" in cur_url:
-                        try:
-                            btn = page.locator("button:has-text('Создать'), a:has-text('Создать'), button:has-text('Create')").first
-                            if btn and btn.is_visible():
-                                btn.click()
-                                page.wait_for_timeout(6000)
-                                cur_url = page.url
-                        except Exception as be:
-                            log(f"Button click error: {be}")
-
-                    if "accountchooser" in cur_url:
-                        try:
-                            acc_item = page.locator("[data-identifier], [data-email], [data-profileidentifier], li[role='link'], div[role='link'], ul li div[role='button']").first
-                            if acc_item and acc_item.is_visible():
-                                acc_item.click()
-                                page.wait_for_timeout(8000)
-                                cur_url = page.url
-                        except Exception as ace:
-                            log(f"Account chooser click error: {ace}")
-
-                    is_explicit_logout = "accounts.google" in cur_url or "signin" in cur_url or "CookieMismatch" in cur_url
-                    if is_explicit_logout:
-                        log(f"Explicit logout detected at {cur_url}! Breaking to re-initialize browser context with fresh cookies from server...")
+                    is_logout = "accounts.google" in cur_url or "signin" in cur_url or "CookieMismatch" in cur_url
+                    if is_logout:
+                        log(f"Session dropped at {cur_url}. Waiting for fresh cookies...")
                         service_state["session_valid"] = False
                         service_state["last_page_url"] = cur_url
-                        # DO NOT overwrite server cookies with broken ones!
+                        send_heartbeat(False, cur_url)
                         break
 
-                    if cur_url.startswith("http") and cur_url != "about:blank":
-                        service_state["last_page_url"] = cur_url
-                        try: service_state["page_title"] = page.title()
-                        except Exception: pass
-                        service_state["session_valid"] = True
-                    else:
-                        log(f"Navigation transient state: {cur_url}. Retaining session_valid=True")
-
+                    service_state["last_page_url"] = cur_url
+                    try: service_state["page_title"] = page.title()
+                    except Exception: pass
+                    service_state["session_valid"] = True
                     service_state["last_check_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
+                    send_heartbeat(True, cur_url)
+
+                    # Read live rotated cookies
                     live_cookies = context.cookies()
                     live_tokens = {
                         c.get("name"): c.get("value")
@@ -429,29 +387,25 @@ def run_playwright_autonomous():
                         if c.get("name") in ["__Secure-1PSIDTS", "__Secure-1PSIDRTS", "__Secure-3PSIDTS", "__Secure-3PSIDRTS"]
                     }
 
-                    changed_keys = [k for k, v in live_tokens.items() if known_tokens.get(k) != v]
-                    # CRITICAL GUARD: Only push if session is completely valid AND has core Google Auth cookies AND not on accounts.google
-                    has_sid = any(c.get("name") in ("SID", "SSID") for c in live_cookies)
-                    if changed_keys and service_state["session_valid"] and has_sid and "accounts.google" not in cur_url:
-                        log(f"TOKENS ROTATED BY GOOGLE ({', '.join(changed_keys)})! Syncing to server...")
+                    changed = [k for k, v in live_tokens.items() if known_tokens.get(k) != v]
+                    has_core = any(c.get("name") in ("SID", "SSID") for c in live_cookies)
+
+                    if changed and has_core and "accounts.google" not in cur_url:
+                        log(f"Tokens rotated by Google: {', '.join(changed)}! Syncing to central server...")
                         updated_list = []
                         now_ts = time.time()
                         for lc in live_cookies:
                             cname = lc.get("name")
-                            if cname not in CLEAN_WHITELIST_NAMES:
+                            if cname not in CLEAN_WHITELIST:
                                 continue
-                            dom_raw = lc.get("domain", "")
-                            if "accounts.google" in dom_raw:
-                                continue
-                            is_host_only = cname in ("OSID", "__Secure-OSID")
-                            target_dom = "flow.google.com" if is_host_only else ".google.com"
+                            rule = CLEAN_WHITELIST[cname]
                             exp = float(lc.get("expires") or 0)
                             if exp <= 0:
                                 exp = now_ts + 31536000
                             updated_list.append({
-                                "domain": target_dom,
+                                "domain": rule["domain"],
                                 "expirationDate": exp,
-                                "hostOnly": is_host_only,
+                                "hostOnly": rule["hostOnly"],
                                 "httpOnly": bool(lc.get("httpOnly", True)),
                                 "name": cname,
                                 "path": lc.get("path", "/"),
@@ -461,16 +415,18 @@ def run_playwright_autonomous():
                                 "storeId": None,
                                 "value": lc.get("value")
                             })
-                        if len(updated_list) >= 10:
-                            new_ver = push_cookies_to_server(updated_list)
-                            if new_ver:
+
+                        if len(updated_list) >= 15:
+                            new_v = push_cookies_to_server(updated_list)
+                            if new_v:
                                 service_state["rotated_count"] += 1
-                                service_state["last_sync_version"] = new_ver
-                                service_state["last_rotated_tokens"] = changed_keys
+                                service_state["last_sync_version"] = new_v
+                                service_state["last_rotated_tokens"] = changed
                                 known_tokens = live_tokens
+                                log(f"New session version v{new_v} live in cloud!")
 
         except Exception as e:
-            log(f"Autonomous engine error: {e}")
+            log(f"Autonomous cloud engine error: {e}")
             service_state["error"] = str(e)
             time.sleep(20)
 
