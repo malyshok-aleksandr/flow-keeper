@@ -8,7 +8,7 @@ import threading
 import urllib.request
 from playwright.sync_api import sync_playwright
 
-FLOW_URL = "https://flow.google.com/?pli=1"
+FLOW_URL = "https://flow.google.com/"
 SYNC_URL = os.environ.get("SYNC_URL", "https://all-creator.bio.co.ua/flow/sync_cookies.php")
 SYNC_SECRET = os.environ.get("SYNC_SECRET", "FLOW_ULTRA_AUTO_SYNC_2026_SECRET_KEY")
 
@@ -28,7 +28,8 @@ def handle_client(client_socket):
         data = b""
         while b"\r\n\r\n" not in data:
             chunk = client_socket.recv(4096)
-            if not chunk: break
+            if not chunk:
+                break
             data += chunk
         if not data:
             client_socket.close()
@@ -41,26 +42,38 @@ def handle_client(client_socket):
             if not line.lower().startswith(b"proxy-authorization"):
                 new_lines.append(line)
         new_request = b"\r\n".join(new_lines) + b"\r\n\r\n" + rest
+
         upstream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        upstream.settimeout(20)
         upstream.connect((PROXY_HOST, PROXY_PORT))
         upstream.sendall(new_request)
+
         def pipe(src, dst):
             try:
                 while True:
                     buf = src.recv(32768)
-                    if not buf: break
+                    if not buf:
+                        break
                     dst.sendall(buf)
-            except: pass
+            except Exception:
+                pass
             finally:
-                try: src.close()
-                except: pass
-                try: dst.close()
-                except: pass
+                try:
+                    src.close()
+                except Exception:
+                    pass
+                try:
+                    dst.close()
+                except Exception:
+                    pass
+
         threading.Thread(target=pipe, args=(client_socket, upstream), daemon=True).start()
         threading.Thread(target=pipe, args=(upstream, client_socket), daemon=True).start()
-    except:
-        try: client_socket.close()
-        except: pass
+    except Exception:
+        try:
+            client_socket.close()
+        except Exception:
+            pass
 
 def start_local_bridge(port=LOCAL_BRIDGE_PORT):
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -73,24 +86,24 @@ def start_local_bridge(port=LOCAL_BRIDGE_PORT):
             conn, _ = server.accept()
             threading.Thread(target=handle_client, args=(conn,), daemon=True).start()
     except Exception as e:
-        log(f"[BRIDGE] Notice: {e}")
+        log(f"[BRIDGE] Bridge error: {e}")
 
-threading.Thread(target=start_local_bridge, daemon=True).start()
-time.sleep(1)
-
-# ----------------- COOKIE PULL / PUSH -----------------
+# ----------------- HOSTING SYNC -----------------
 def fetch_cookies():
     try:
         req = urllib.request.Request(
             SYNC_URL,
-            data=json.dumps({"secret": SYNC_SECRET, "action": "get_cookies"}).encode(),
-            headers={"Content-Type": "application/json"}
+            data=json.dumps({
+                "action": "get_cookies",
+                "secret": SYNC_SECRET
+            }).encode('utf-8'),
+            headers={"Content-Type": "application/json", "User-Agent": "GitHubKeeper"}
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode())
+            data = json.loads(resp.read().decode('utf-8'))
             return data.get("cookies", []), data.get("version", 0)
     except Exception as e:
-        log(f"Error fetching cookies: {e}")
+        log(f"Error fetching cookies from hosting: {e}")
         return [], 0
 
 def push_cookies(cookies_list):
@@ -101,63 +114,75 @@ def push_cookies(cookies_list):
                 "secret": SYNC_SECRET,
                 "action": "sync",
                 "email": "vps_autokeeper@all-creator.bio.co.ua",
-                "device_name": "GitHub-Actions-CloudCron",
+                "device_name": "GitHub-Actions-Keeper-Runner",
                 "cookies": cookies_list
-            }).encode(),
-            headers={"Content-Type": "application/json"}
+            }).encode('utf-8'),
+            headers={"Content-Type": "application/json", "User-Agent": "GitHubKeeper"}
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
-            res = json.loads(resp.read().decode())
-            log(f"[AUTO-SYNC] Successfully pushed to server! Version: v{res.get('version')}")
-            return res.get("version")
+            data = json.loads(resp.read().decode('utf-8'))
+            return data.get("version", 0)
     except Exception as e:
-        log(f"[AUTO-SYNC] Error pushing cookies: {e}")
+        log(f"Error pushing cookies to hosting: {e}")
         return None
 
+# ----------------- MAIN KEEPER ROUTINE -----------------
 def main():
+    bridge_thread = threading.Thread(target=start_local_bridge, daemon=True)
+    bridge_thread.start()
+    time.sleep(1)
+
     log("=== STARTING GITHUB ACTIONS FLOW KEEPER JOB ===")
-    raw_cookies, version = fetch_cookies()
-    if not raw_cookies:
-        log("No cookies received from server. Aborting.")
+    cookies, ver = fetch_cookies()
+    if not cookies:
+        log("No cookies fetched from server! Exiting.")
         sys.exit(1)
 
-    log(f"Fetched {len(raw_cookies)} cookies (version v{version}) from hosting.")
+    log(f"Fetched {len(cookies)} cookies (version v{ver}) from hosting.")
 
+    # Convert to Playwright format
     pw_cookies = []
-    for c in raw_cookies:
-        cname = c.get("name")
-        cval = c.get("value")
-        if not cname or not cval: continue
-        same_site = c.get("sameSite", "Lax")
-        if same_site == "no_restriction": same_site = "None"
-        elif same_site not in ["Strict", "Lax", "None"]: same_site = "Lax"
+    for c in cookies:
+        if not c.get("name") or not c.get("value"):
+            continue
+        same_site = c.get("sameSite", "lax")
+        if same_site == "no_restriction":
+            same_site = "None"
+        elif same_site not in ("Strict", "Lax", "None"):
+            same_site = "Lax"
+
+        is_host_only = c.get("hostOnly") or c.get("name") in ("OSID", "__Secure-OSID")
+        domain = "flow.google.com" if is_host_only else c.get("domain", ".google.com")
+        if not is_host_only and not domain.startswith("."):
+            domain = "." + domain
 
         entry = {
-            "name": cname,
-            "value": cval,
-            "secure": c.get("secure", True),
-            "httpOnly": c.get("httpOnly", False),
+            "name": c.get("name"),
+            "value": c.get("value"),
+            "domain": domain,
+            "path": c.get("path", "/"),
+            "secure": bool(c.get("secure", True)),
+            "httpOnly": bool(c.get("httpOnly", False)),
             "sameSite": same_site
         }
-        if c.get("hostOnly"):
-            entry["url"] = "https://flow.google.com"
-        else:
-            entry["domain"] = c.get("domain", ".google.com")
-            entry["path"] = c.get("path", "/")
         pw_cookies.append(entry)
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            proxy={"server": f"http://127.0.0.1:{LOCAL_BRIDGE_PORT}"},
-            args=[
+        browser_kwargs = {
+            "headless": True,
+            "proxy": {"server": f"http://127.0.0.1:{LOCAL_BRIDGE_PORT}"},
+            "args": [
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
                 "--disable-blink-features=AutomationControlled"
             ]
-        )
+        }
+        if sys.platform == "win32":
+            browser_kwargs["channel"] = "chrome"
+
+        browser = p.chromium.launch(**browser_kwargs)
         ctx = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
             viewport={"width": 1400, "height": 900}
@@ -166,24 +191,57 @@ def main():
         page = ctx.new_page()
 
         log(f"Navigating to Flow: {FLOW_URL}...")
-        try:
-            page.goto(FLOW_URL, wait_until="commit", timeout=35000)
-            page.wait_for_timeout(8000)
-        except Exception as e:
-            log(f"Navigation notice: {e}")
+        nav_ok = False
+        for attempt in range(1, 4):
+            try:
+                page.goto(FLOW_URL, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(4000)
+                nav_ok = True
+                break
+            except Exception as e:
+                log(f"Navigation attempt {attempt} notice: {e}")
+                time.sleep(3)
 
         cur_url = page.url
-        cur_title = page.title()
+        try:
+            cur_title = page.title()
+        except Exception:
+            cur_title = "Unknown"
         log(f"Landed on: URL={cur_url} | Title={cur_title}")
 
         if "about" in cur_url:
-            log("Landed on /about. Applying safe reload with pli=1 parameter (no login clicks)...")
+            log("Landed on /about. Looking for 'Создать с помощью Google Flow' CTA button...")
             try:
-                page.goto("https://flow.google.com/?pli=1", wait_until="commit", timeout=25000)
-                page.wait_for_timeout(5000)
-                log(f"After safe reload: URL={page.url} | Title={page.title()}")
+                cta = page.query_selector("text='Создать с помощью Google Flow'")
+                if not cta:
+                    cta = page.query_selector("button:has-text('Создать'), a:has-text('Создать')")
+                if cta:
+                    log("Found CTA button! Clicking to enter Flow Studio...")
+                    cta.click()
+                    page.wait_for_timeout(6000)
+                    cur_url = page.url
+                    try:
+                        cur_title = page.title()
+                    except Exception:
+                        cur_title = "Unknown"
+                    log(f"After CTA click: URL={cur_url} | Title={cur_title}")
             except Exception as ce:
-                log(f"Reload notice: {ce}")
+                log(f"CTA click notice: {ce}")
+
+        # Check for logout or accountchooser
+        if "signin" in cur_url or "accountchooser" in cur_url:
+            log(f"CRITICAL: Redirected to login: {cur_url}")
+            browser.close()
+            sys.exit(1)
+
+        # Activity pulse to keep tokens active
+        try:
+            page.evaluate("window.scrollTo(0, 150);")
+            page.wait_for_timeout(1000)
+            page.evaluate("window.scrollTo(0, 0);")
+            page.wait_for_timeout(1000)
+        except Exception:
+            pass
 
         # Extract live rotated cookies
         live_c = ctx.cookies()
